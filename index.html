@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Image Compressor</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" />
+  <style>
+    body {
+      background-image: linear-gradient(225deg, rgb(171, 200, 222) 0%, rgb(199, 201, 216) 16.667%, rgb(229, 204, 207) 33.333%, rgb(255, 211, 199) 50%, rgb(255, 219, 194) 66.667%, rgb(255, 228, 192) 83.333%, rgb(255, 237, 195) 100%);
+      min-height: 100vh;
+    }
+
+    .main-wrap {
+      padding: 32px 0;
+    }
+
+    .dropzone {
+      border: 2px dashed #90a4ae;
+      border-radius: 8px;
+      padding: 32px 16px;
+      text-align: center;
+      color: #546e7a;
+      background: #fafafa;
+      transition: all 0.2s ease;
+      cursor: pointer;
+      margin-bottom: 8px;
+    }
+
+    .dropzone:hover,
+    .dropzone.dragover {
+      border-color: #00897b;
+      background: #e0f2f1;
+      color: #004d40;
+    }
+
+    .status {
+      margin-top: 16px;
+      font-weight: 500;
+      color: #546e7a;
+    }
+
+    .status.ok {
+      color: #2e7d32;
+    }
+
+    .status.err {
+      color: #c62828;
+    }
+
+    .result-name {
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    .result-meta {
+      color: #546e7a;
+      font-size: 0.92rem;
+      margin-top: 4px;
+    }
+
+    .result-actions {
+      margin-top: 12px;
+    }
+
+    .progress-wrap {
+      margin-top: 12px;
+      display: none;
+    }
+
+    .progress-wrap.active {
+      display: block;
+    }
+
+    .progress-label {
+      font-size: 0.9rem;
+      color: #546e7a;
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+  <main class="container main-wrap">
+    <div class="card z-depth-2">
+      <div class="card-content">
+        <span class="card-title">Image Compressor</span>
+        <p class="grey-text text-darken-1">Drop one or multiple images, compress them in your browser, and download the results.</p>
+
+        <div class="row" style="margin-top: 8px;">
+          <div class="input-field col s12 m4">
+            <input id="quality" type="number" min="1" max="100" value="75" />
+            <label for="quality" class="active">Quality (1-100)</label>
+          </div>
+          <div class="input-field col s12 m4">
+            <input id="maxWidth" type="number" min="1" />
+            <label for="maxWidth">Max width (px, optional)</label>
+          </div>
+          <div class="input-field col s12 m4">
+            <select id="format">
+              <option value="image/jpeg" selected>JPEG</option>
+              <option value="image/webp">WebP</option>
+            </select>
+            <label>Output format</label>
+          </div>
+        </div>
+
+        <div id="dropzone" class="dropzone" role="button" tabindex="0">
+          Drop images here or click to choose files
+        </div>
+        <input id="fileInput" type="file" accept="image/*" multiple hidden />
+
+        <div class="row" style="margin-top: 8px; margin-bottom: 0;">
+          <div class="col s12 m4" style="margin-bottom: 8px;">
+            <button id="compressBtn" class="btn waves-effect waves-light teal darken-1" style="width: 100%;" disabled>Compress</button>
+          </div>
+          <div class="col s12 m4" style="margin-bottom: 8px;">
+            <button id="downloadAllBtn" class="btn waves-effect waves-light blue darken-2" style="width: 100%;" disabled>Download all</button>
+          </div>
+          <div class="col s12 m4" style="margin-bottom: 8px;">
+            <button id="clearBtn" class="btn waves-effect waves-light grey darken-1" style="width: 100%;">Clear</button>
+          </div>
+        </div>
+
+        <div id="progressWrap" class="progress-wrap" aria-live="polite">
+          <div id="progressLabel" class="progress-label">Compressing: 0%</div>
+          <div class="progress">
+            <div id="progressBar" class="determinate" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <div id="status" class="status">No files selected.</div>
+
+        <ul id="results" class="collection" style="margin-top: 16px;"></ul>
+      </div>
+    </div>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
+  <script>
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const compressBtn = document.getElementById('compressBtn');
+    const downloadAllBtn = document.getElementById('downloadAllBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+    const qualityEl = document.getElementById('quality');
+    const maxWidthEl = document.getElementById('maxWidth');
+    const formatEl = document.getElementById('format');
+    const progressWrap = document.getElementById('progressWrap');
+    const progressBar = document.getElementById('progressBar');
+    const progressLabel = document.getElementById('progressLabel');
+
+    let selectedFiles = [];
+    let compressedFiles = [];
+
+    document.addEventListener('DOMContentLoaded', () => {
+      M.FormSelect.init(document.querySelectorAll('select'));
+      M.updateTextFields();
+    });
+
+    const formatBytes = (bytes) => {
+      if (bytes === 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(1024));
+      return `${(bytes / (1024 ** i)).toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+    };
+
+    const setStatus = (text, type = '') => {
+      statusEl.textContent = text;
+      statusEl.className = `status ${type}`.trim();
+    };
+
+    const resetOutput = () => {
+      compressedFiles.forEach((file) => URL.revokeObjectURL(file.url));
+      compressedFiles = [];
+      resultsEl.innerHTML = '';
+      downloadAllBtn.disabled = true;
+    };
+
+    const hideProgress = () => {
+      progressWrap.classList.remove('active');
+      progressBar.style.width = '0%';
+      progressLabel.textContent = 'Compressing: 0%';
+    };
+
+    const showProgress = () => {
+      progressWrap.classList.add('active');
+    };
+
+    const updateProgress = (done, total) => {
+      const safeTotal = Math.max(1, total);
+      const percent = Math.round((done / safeTotal) * 100);
+      progressBar.style.width = `${percent}%`;
+      progressLabel.textContent = `Compressing: ${done}/${total} (${percent}%)`;
+    };
+
+    const updateSelection = (files) => {
+      selectedFiles = files.filter((f) => f.type.startsWith('image/'));
+      compressBtn.disabled = selectedFiles.length === 0;
+      resetOutput();
+      hideProgress();
+
+      if (selectedFiles.length === 0) {
+        setStatus('No valid image files selected.', 'err');
+        return;
+      }
+
+      const total = selectedFiles.reduce((sum, f) => sum + f.size, 0);
+      setStatus(`Selected ${selectedFiles.length} image(s), total ${formatBytes(total)}.`);
+    };
+
+    const getExtForMime = (mime) => {
+      if (mime === 'image/webp') return 'webp';
+      if (mime === 'image/png') return 'png';
+      return 'jpg';
+    };
+
+    const compressImage = (file, quality, maxWidth, mimeType) => new Promise((resolve, reject) => {
+      const img = new Image();
+      const reader = new FileReader();
+
+      reader.onload = (e) => {
+        img.src = e.target.result;
+      };
+
+      reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+
+      img.onload = () => {
+        const scale = maxWidth && img.width > maxWidth ? maxWidth / img.width : 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            reject(new Error(`Failed to compress ${file.name}`));
+            return;
+          }
+
+          const ext = getExtForMime(mimeType);
+          const baseName = file.name.replace(/\.[^.]+$/, '');
+          const outName = `${baseName}.compressed.${ext}`;
+          const url = URL.createObjectURL(blob);
+          resolve({ fileName: file.name, outName, originalSize: file.size, compressedSize: blob.size, url });
+        }, mimeType, quality);
+      };
+
+      img.onerror = () => reject(new Error(`Invalid image file: ${file.name}`));
+
+      reader.readAsDataURL(file);
+    });
+
+    const renderResults = () => {
+      resultsEl.innerHTML = '';
+
+      compressedFiles.forEach((item) => {
+        const saved = item.originalSize - item.compressedSize;
+        const percent = item.originalSize > 0
+          ? Math.max(0, (saved / item.originalSize) * 100)
+          : 0;
+
+        const li = document.createElement('li');
+        li.className = 'collection-item';
+        li.innerHTML = `
+          <div class="result-name">${item.fileName}</div>
+          <div class="result-meta">${formatBytes(item.originalSize)} -> ${formatBytes(item.compressedSize)} (${percent.toFixed(1)}% smaller)</div>
+          <div class="result-meta">Download name: ${item.outName}</div>
+          <div class="result-actions">
+            <a class="btn-small blue darken-2" href="${item.url}" download="${item.outName}">Download</a>
+          </div>
+        `;
+        resultsEl.appendChild(li);
+      });
+    };
+
+    const triggerDownload = (href, filename) => {
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    };
+
+    dropzone.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        fileInput.click();
+      }
+    });
+
+    dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropzone.classList.add('dragover');
+    });
+
+    ['dragleave', 'dragend'].forEach((evt) => {
+      dropzone.addEventListener(evt, () => dropzone.classList.remove('dragover'));
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      const files = Array.from(e.dataTransfer.files || []);
+      updateSelection(files);
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      const files = Array.from(e.target.files || []);
+      updateSelection(files);
+    });
+
+    compressBtn.addEventListener('click', async () => {
+      if (selectedFiles.length === 0) return;
+
+      const qualityValue = Math.min(100, Math.max(1, Number(qualityEl.value || 75))) / 100;
+      qualityEl.value = String(Math.round(qualityValue * 100));
+
+      const maxWidthRaw = Number(maxWidthEl.value);
+      const maxWidth = Number.isFinite(maxWidthRaw) && maxWidthRaw > 0 ? Math.floor(maxWidthRaw) : null;
+      const mimeType = formatEl.value;
+
+      setStatus('Compressing images...');
+      compressBtn.disabled = true;
+      downloadAllBtn.disabled = true;
+      showProgress();
+      updateProgress(0, selectedFiles.length);
+
+      resetOutput();
+      let success = 0;
+      let processed = 0;
+
+      for (const file of selectedFiles) {
+        try {
+          const result = await compressImage(file, qualityValue, maxWidth, mimeType);
+          compressedFiles.push(result);
+          success += 1;
+        } catch (err) {
+          console.error(err);
+        } finally {
+          processed += 1;
+          updateProgress(processed, selectedFiles.length);
+        }
+      }
+
+      compressBtn.disabled = false;
+      hideProgress();
+
+      if (compressedFiles.length === 0) {
+        setStatus('Compression failed for all files.', 'err');
+        return;
+      }
+
+      downloadAllBtn.disabled = false;
+      renderResults();
+
+      const originalTotal = compressedFiles.reduce((s, i) => s + i.originalSize, 0);
+      const compressedTotal = compressedFiles.reduce((s, i) => s + i.compressedSize, 0);
+      const saved = originalTotal - compressedTotal;
+      const pct = originalTotal > 0 ? (saved / originalTotal) * 100 : 0;
+      const partial = success < selectedFiles.length ? ` (${selectedFiles.length - success} failed)` : '';
+
+      setStatus(`Compressed ${success}/${selectedFiles.length} image(s). Saved ${formatBytes(saved)} (${pct.toFixed(1)}%).${partial}`, 'ok');
+    });
+
+    downloadAllBtn.addEventListener('click', () => {
+      if (compressedFiles.length === 0) return;
+
+      compressedFiles.forEach((item, index) => {
+        setTimeout(() => {
+          triggerDownload(item.url, item.outName);
+        }, index * 150);
+      });
+    });
+
+    clearBtn.addEventListener('click', () => {
+      selectedFiles = [];
+      fileInput.value = '';
+      resetOutput();
+      hideProgress();
+      compressBtn.disabled = true;
+      setStatus('No files selected.');
+    });
+  </script>
+</body>
+</html>
