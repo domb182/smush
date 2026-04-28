@@ -175,6 +175,8 @@
 
     let selectedFiles = [];
     let compressedFiles = [];
+    let gifencPromise = null;
+    let gifuctPromise = null;
 
     const formatBytes = (bytes) => {
       if (bytes === 0) return '0 B';
@@ -234,14 +236,87 @@
       return 'jpg';
     };
 
+    const compressAnimatedGif = async (file, quality, maxWidth) => {
+      const [{ parseGIF, decompressFrames }, { GIFEncoder, quantize, applyPalette }] = await Promise.all([
+        (gifuctPromise ??= import('https://cdn.jsdelivr.net/npm/gifuct-js/+esm')),
+        (gifencPromise ??= import('https://cdn.jsdelivr.net/npm/gifenc@1.0.3/+esm')),
+      ]);
+
+      const buffer = await file.arrayBuffer();
+      const gif = parseGIF(buffer);
+      const frames = decompressFrames(gif, true);
+
+      if (!frames || frames.length === 0) throw new Error(`No frames found in ${file.name}`);
+
+      const srcWidth = gif.lsd.width;
+      const srcHeight = gif.lsd.height;
+      const scale = maxWidth && srcWidth > maxWidth ? maxWidth / srcWidth : 1;
+      const outWidth = Math.round(srcWidth * scale);
+      const outHeight = Math.round(srcHeight * scale);
+      const maxColors = Math.max(2, Math.round(quality * 256));
+
+      const compositeCanvas = document.createElement('canvas');
+      compositeCanvas.width = srcWidth;
+      compositeCanvas.height = srcHeight;
+      const ctx = compositeCanvas.getContext('2d');
+
+      const outputCanvas = document.createElement('canvas');
+      outputCanvas.width = outWidth;
+      outputCanvas.height = outHeight;
+      const outCtx = outputCanvas.getContext('2d');
+
+      const encoder = GIFEncoder();
+      let prevState = null;
+
+      for (const frame of frames) {
+        const { dims, patch, delay, disposalType } = frame;
+
+        if (disposalType === 3) {
+          prevState = ctx.getImageData(0, 0, srcWidth, srcHeight);
+        }
+
+        ctx.putImageData(new ImageData(new Uint8ClampedArray(patch), dims.width, dims.height), dims.left, dims.top);
+
+        outCtx.fillStyle = '#ffffff';
+        outCtx.fillRect(0, 0, outWidth, outHeight);
+        outCtx.drawImage(compositeCanvas, 0, 0, outWidth, outHeight);
+
+        const imageData = outCtx.getImageData(0, 0, outWidth, outHeight);
+        const palette = quantize(imageData.data, maxColors);
+        const index = applyPalette(imageData.data, palette);
+
+        encoder.writeFrame(index, outWidth, outHeight, { palette, delay: delay || 100, repeat: 0 });
+
+        if (disposalType === 2) {
+          ctx.clearRect(dims.left, dims.top, dims.width, dims.height);
+        } else if (disposalType === 3 && prevState) {
+          ctx.putImageData(prevState, 0, 0);
+        }
+      }
+
+      encoder.finish();
+      return new Blob([encoder.bytes()], { type: 'image/gif' });
+    };
+
     const compressImage = (file, quality, maxWidth, mimeType) => new Promise((resolve, reject) => {
+      const finalise = (blob) => {
+        if (!blob) { reject(new Error(`Failed to compress ${file.name}`)); return; }
+        const ext = getExtForMime(mimeType);
+        const baseName = file.name.replace(/\.[^.]+$/, '');
+        const outName = `${baseName}.compressed.${ext}`;
+        const url = URL.createObjectURL(blob);
+        resolve({ fileName: file.name, outName, originalSize: file.size, compressedSize: blob.size, url });
+      };
+
+      if (mimeType === 'image/gif' && file.type === 'image/gif') {
+        compressAnimatedGif(file, quality, maxWidth).then(finalise).catch(reject);
+        return;
+      }
+
       const img = new Image();
       const reader = new FileReader();
 
-      reader.onload = (e) => {
-        img.src = e.target.result;
-      };
-
+      reader.onload = (e) => { img.src = e.target.result; };
       reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
 
       img.onload = async () => {
@@ -250,12 +325,15 @@
         canvas.width = Math.round(img.width * scale);
         canvas.height = Math.round(img.height * scale);
         const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
         try {
           let blob;
           if (mimeType === 'image/gif') {
-            const { GIFEncoder, quantize, applyPalette } = await import('https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.module.js');
+            gifencPromise ??= import('https://cdn.jsdelivr.net/npm/gifenc@1.0.3/+esm');
+            const { GIFEncoder, quantize, applyPalette } = await gifencPromise;
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const maxColors = Math.max(2, Math.round(quality * 256));
             const palette = quantize(imageData.data, maxColors);
@@ -267,24 +345,13 @@
           } else {
             blob = await new Promise((res) => canvas.toBlob(res, mimeType, quality));
           }
-
-          if (!blob) {
-            reject(new Error(`Failed to compress ${file.name}`));
-            return;
-          }
-
-          const ext = getExtForMime(mimeType);
-          const baseName = file.name.replace(/\.[^.]+$/, '');
-          const outName = `${baseName}.compressed.${ext}`;
-          const url = URL.createObjectURL(blob);
-          resolve({ fileName: file.name, outName, originalSize: file.size, compressedSize: blob.size, url });
+          finalise(blob);
         } catch (err) {
           reject(err);
         }
       };
 
       img.onerror = () => reject(new Error(`Invalid image file: ${file.name}`));
-
       reader.readAsDataURL(file);
     });
 
