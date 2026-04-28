@@ -121,6 +121,7 @@
             <select id="format" class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-slate-800 outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100">
               <option value="image/jpeg" selected>JPEG</option>
               <option value="image/webp">WebP</option>
+              <option value="image/gif">GIF</option>
             </select>
           </div>
         </div>
@@ -229,6 +230,7 @@
     const getExtForMime = (mime) => {
       if (mime === 'image/webp') return 'webp';
       if (mime === 'image/png') return 'png';
+      if (mime === 'image/gif') return 'gif';
       return 'jpg';
     };
 
@@ -242,7 +244,7 @@
 
       reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
 
-      img.onload = () => {
+      img.onload = async () => {
         const scale = maxWidth && img.width > maxWidth ? maxWidth / img.width : 1;
         const canvas = document.createElement('canvas');
         canvas.width = Math.round(img.width * scale);
@@ -250,7 +252,22 @@
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-        canvas.toBlob((blob) => {
+        try {
+          let blob;
+          if (mimeType === 'image/gif') {
+            const { GIFEncoder, quantize, applyPalette } = await import('https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.module.js');
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const maxColors = Math.max(2, Math.round(quality * 256));
+            const palette = quantize(imageData.data, maxColors);
+            const index = applyPalette(imageData.data, palette);
+            const encoder = GIFEncoder();
+            encoder.writeFrame(index, canvas.width, canvas.height, { palette });
+            encoder.finish();
+            blob = new Blob([encoder.bytes()], { type: 'image/gif' });
+          } else {
+            blob = await new Promise((res) => canvas.toBlob(res, mimeType, quality));
+          }
+
           if (!blob) {
             reject(new Error(`Failed to compress ${file.name}`));
             return;
@@ -261,7 +278,9 @@
           const outName = `${baseName}.compressed.${ext}`;
           const url = URL.createObjectURL(blob);
           resolve({ fileName: file.name, outName, originalSize: file.size, compressedSize: blob.size, url });
-        }, mimeType, quality);
+        } catch (err) {
+          reject(err);
+        }
       };
 
       img.onerror = () => reject(new Error(`Invalid image file: ${file.name}`));
